@@ -1,0 +1,7 @@
+## Interface: 16001
+## Title: AutoRankUp
+## Notes: Swaps the old rank on your action bars for the new one when you train a higher spell rank.
+## Author: jcham
+## Version: 1.0.0
+
+AutoRankUp.lua
