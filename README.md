@@ -12,8 +12,10 @@ Clone or download this repository into your WoW Forever client's `Interface\AddO
 - Slots holding an older rank you placed on purpose are left alone.
 - Action bars can't be changed in combat, so a rank learned mid-fight is swapped when combat ends.
 - Macros and pet abilities are not touched.
+- Works with the Gamepad UI: every action slot the client has is scanned, plus the slots used by the gamepad action bar's buttons.
 
 ## Commands
 
-- `/aru all` — replace every lower rank on your bars with the highest known rank
+- `/aru all` — replace every lower rank on your bars with the highest known rank (also available by clicking AutoRankUp in the addon compartment, for gamepad players)
+- `/aru slots` — show which action slots are scanned, including the gamepad bar
 - `/aru debug` — print spell IDs when a new rank is detected

@@ -1,6 +1,9 @@
 local addonName = ...
 
-local MAX_ACTION_SLOTS = 180
+-- Keyboard bars use slots 1-180, but the gamepad bar's slot numbers aren't
+-- documented, so scan well past that and stop at the first slot the client rejects.
+local MAX_SCAN_SLOT = 1000
+local GAMEPAD_BARS = { "GamepadMainActionBarFrame" }
 local PREFIX = "|cff33ff99AutoRankUp|r: "
 local BANK = Enum.SpellBookSpellBank.Player
 local SPELL_ITEM = Enum.SpellBookItemType.Spell
@@ -68,14 +71,78 @@ local function PickupRank(entry)
     return GetCursorInfo() == "spell"
 end
 
--- Puts `entry` into every action slot for which shouldReplace(slotSpellID) is true.
-local function ReplaceSlots(entry, shouldReplace)
+local function IsGamepadUI()
+    local gamepad = Enum.InputDeviceInterfaceType and Enum.InputDeviceInterfaceType.Gamepad
+    if not (gamepad and C_InputInterfaceStyle and C_InputInterfaceStyle.GetCurrentStyle) then
+        return false
+    end
+    local ok, style = pcall(C_InputInterfaceStyle.GetCurrentStyle)
+    return ok and style == gamepad
+end
+
+local function ButtonSlot(button)
+    local ok, slot = pcall(function()
+        if button.CalculateAction then
+            return button:CalculateAction()
+        end
+        return button.action or (button.GetAttribute and button:GetAttribute("action"))
+    end)
+    return ok and type(slot) == "number" and slot or nil
+end
+
+-- Collects the action slots shown by a bar's buttons, however deeply they are nested.
+local function CollectBarSlots(frame, slots, depth)
+    if depth > 4 or not frame.GetChildren then return end
+    for _, child in ipairs({ frame:GetChildren() }) do
+        local slot = ButtonSlot(child)
+        if slot then
+            slots[slot] = true
+        end
+        CollectBarSlots(child, slots, depth + 1)
+    end
+end
+
+local function GamepadBarSlots()
+    local slots = {}
+    for _, name in ipairs(GAMEPAD_BARS) do
+        local bar = _G[name]
+        if bar then
+            CollectBarSlots(bar, slots, 1)
+        end
+    end
+    return slots
+end
+
+-- Every action slot that holds a spell, from the keyboard bars and the gamepad bar.
+local function SpellSlots()
+    local slots, seen = {}, {}
+    local function Add(slot)
+        if seen[slot] then return true end
+        local ok, actionType, id, subType = pcall(GetActionInfo, slot)
+        if not ok then return false end
+        seen[slot] = true
+        if actionType == "spell" and subType ~= "pet" then
+            slots[#slots + 1] = { slot = slot, id = id }
+        end
+        return true
+    end
+    for slot = 1, MAX_SCAN_SLOT do
+        if not Add(slot) then break end
+    end
+    for slot in pairs(GamepadBarSlots()) do
+        Add(slot)
+    end
+    return slots
+end
+
+-- Puts `entry` into every slot in `slots` for which shouldReplace(slotSpellID) is true.
+local function ReplaceSlots(slots, entry, shouldReplace)
     local count = 0
-    for slot = 1, MAX_ACTION_SLOTS do
-        local actionType, id, subType = GetActionInfo(slot)
-        if actionType == "spell" and subType ~= "pet" and shouldReplace(id) then
+    for _, action in ipairs(slots) do
+        if shouldReplace(action.id) then
             if PickupRank(entry) then
-                PlaceAction(slot)
+                PlaceAction(action.slot)
+                action.id = entry.id
                 count = count + 1
             end
             ClearCursor()
@@ -105,14 +172,16 @@ local function Check()
     best, known = newBest, newKnown
     if not old then return end
 
+    local slots
     for name, entry in pairs(newBest) do
         local prev = old[name]
         if prev and prev.id ~= entry.id and newKnown[prev.id] then
             if debug then
                 Print(("%s: %d -> %d"):format(name, prev.id, entry.id))
             end
+            slots = slots or SpellSlots()
             local prevID = prev.id
-            Report(name, entry, ReplaceSlots(entry, function(id) return id == prevID end))
+            Report(name, entry, ReplaceSlots(slots, entry, function(id) return id == prevID end))
         end
     end
 end
@@ -130,9 +199,10 @@ local function UpgradeAll()
         return
     end
     best, known = ScanSpellbook()
+    local slots = SpellSlots()
     local total = 0
     for name, entry in pairs(best) do
-        local count = ReplaceSlots(entry, function(id)
+        local count = ReplaceSlots(slots, entry, function(id)
             return id ~= entry.id and known[id] == name
         end)
         Report(name, entry, count)
@@ -141,6 +211,26 @@ local function UpgradeAll()
     if total == 0 then
         Print("Every spell on your bars is already the highest rank.")
     end
+end
+
+-- Diagnostic: shows which slots are scanned, so gamepad coverage can be checked in game.
+local function ReportSlots()
+    local padSlots = {}
+    for slot in pairs(GamepadBarSlots()) do
+        padSlots[#padSlots + 1] = slot
+    end
+    table.sort(padSlots)
+    Print("Gamepad UI " .. (IsGamepadUI() and "on" or "off") .. ".")
+    if #padSlots > 0 then
+        Print("Gamepad bar slots: " .. table.concat(padSlots, ", "))
+    else
+        Print("No gamepad bar buttons found (normal when the gamepad UI is off).")
+    end
+    local spellSlots, highest = SpellSlots(), 0
+    for _, action in ipairs(spellSlots) do
+        highest = math.max(highest, action.slot)
+    end
+    Print(("%d slots hold spells; the highest is slot %d."):format(#spellSlots, highest))
 end
 
 frame:SetScript("OnEvent", function(self, event)
@@ -155,18 +245,27 @@ for _, event in ipairs({ "PLAYER_LOGIN", "SPELLS_CHANGED", "LEARNED_SPELL_IN_SKI
     pcall(frame.RegisterEvent, frame, event)
 end
 
+-- Clicking AutoRankUp in the addon compartment runs the sweep, so gamepad
+-- players don't need to type a slash command.
+function AutoRankUp_OnAddonCompartmentClick()
+    UpgradeAll()
+end
+
 SLASH_AUTORANKUP1 = "/autorankup"
 SLASH_AUTORANKUP2 = "/aru"
 SlashCmdList.AUTORANKUP = function(msg)
     msg = (msg or ""):lower():match("^%s*(.-)%s*$")
     if msg == "all" then
         UpgradeAll()
+    elseif msg == "slots" then
+        ReportSlots()
     elseif msg == "debug" then
         debug = not debug
         Print("Debug " .. (debug and "on" or "off") .. ".")
     else
         Print("Ranks are upgraded automatically when you train them.")
         Print("/aru all - replace every lower rank on your bars with the highest rank")
+        Print("/aru slots - show which action slots are scanned, including the gamepad bar")
         Print("/aru debug - print spell IDs when a new rank is detected")
     end
 end
