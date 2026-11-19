@@ -71,6 +71,22 @@ local function PickupRank(entry)
     return GetCursorInfo() == "spell"
 end
 
+-- Name and rank of any spell ID, whether or not that rank is listed in the spellbook.
+local function SpellRankInfo(id)
+    local name = C_Spell.GetSpellName(id)
+    local label = C_Spell.GetSpellSubtext(id) or ""
+    if label == "" and C_Spell.RequestLoadSpellData then
+        C_Spell.RequestLoadSpellData(id)
+    end
+    return name, tonumber(label:match("%d+")) or 0, label
+end
+
+-- True when the spell in a slot is a lower rank of a spell whose best rank is `entry`.
+local function IsLowerRank(id, name, rank, entry)
+    if id == entry.id then return false end
+    return known[id] == name or (rank > 0 and rank < entry.rank)
+end
+
 local function IsGamepadUI()
     local gamepad = Enum.InputDeviceInterfaceType and Enum.InputDeviceInterfaceType.Gamepad
     if not (gamepad and C_InputInterfaceStyle and C_InputInterfaceStyle.GetCurrentStyle) then
@@ -175,7 +191,9 @@ local function Check()
     local slots
     for name, entry in pairs(newBest) do
         local prev = old[name]
-        if prev and prev.id ~= entry.id and newKnown[prev.id] then
+        -- the spellbook may drop the old rank once the new one is learned,
+        -- so a higher rank number also counts as an upgrade
+        if prev and prev.id ~= entry.id and (newKnown[prev.id] or entry.rank > prev.rank) then
             if debug then
                 Print(("%s: %d -> %d"):format(name, prev.id, entry.id))
             end
@@ -199,17 +217,47 @@ local function UpgradeAll()
         return
     end
     best, known = ScanSpellbook()
-    local slots = SpellSlots()
-    local total = 0
-    for name, entry in pairs(best) do
-        local count = ReplaceSlots(slots, entry, function(id)
-            return id ~= entry.id and known[id] == name
-        end)
-        Report(name, entry, count)
-        total = total + count
+    local counts, total = {}, 0
+    for _, action in ipairs(SpellSlots()) do
+        local name, rank = SpellRankInfo(action.id)
+        local entry = name and best[name]
+        if entry and IsLowerRank(action.id, name, rank, entry) then
+            if PickupRank(entry) then
+                PlaceAction(action.slot)
+                counts[name] = (counts[name] or 0) + 1
+                total = total + 1
+            end
+            ClearCursor()
+        end
+    end
+    for name, count in pairs(counts) do
+        Report(name, best[name], count)
     end
     if total == 0 then
         Print("Every spell on your bars is already the highest rank.")
+    end
+end
+
+-- Diagnostic: lists every spell on the bars with the rank the game reports
+-- and the rank the addon would replace it with.
+local function ReportSpells()
+    best, known = ScanSpellbook()
+    local ids, names = 0, 0
+    for _ in pairs(known) do ids = ids + 1 end
+    for _ in pairs(best) do names = names + 1 end
+    Print(("Spellbook: %d spells, %d ranks listed."):format(names, ids))
+    for _, action in ipairs(SpellSlots()) do
+        local name, rank, label = SpellRankInfo(action.id)
+        local entry = name and best[name]
+        local verdict
+        if not entry then
+            verdict = "not in spellbook"
+        elseif IsLowerRank(action.id, name, rank, entry) then
+            verdict = ("would upgrade to %d (%s)"):format(entry.id, entry.label)
+        else
+            verdict = ("best is %d (%s)"):format(entry.id, entry.label)
+        end
+        Print(("slot %d: %s [%s] id %d - %s"):format(action.slot, name or "?", label, action.id, verdict))
     end
 end
 
@@ -259,6 +307,8 @@ SlashCmdList.AUTORANKUP = function(msg)
         UpgradeAll()
     elseif msg == "slots" then
         ReportSlots()
+    elseif msg == "spells" then
+        ReportSpells()
     elseif msg == "debug" then
         debug = not debug
         Print("Debug " .. (debug and "on" or "off") .. ".")
@@ -266,6 +316,7 @@ SlashCmdList.AUTORANKUP = function(msg)
         Print("Ranks are upgraded automatically when you train them.")
         Print("/aru all - replace every lower rank on your bars with the highest rank")
         Print("/aru slots - show which action slots are scanned, including the gamepad bar")
+        Print("/aru spells - list each spell on your bars with its rank and what it would become")
         Print("/aru debug - print spell IDs when a new rank is detected")
     end
 end

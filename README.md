@@ -18,4 +18,5 @@ Clone or download this repository into your WoW Forever client's `Interface\AddO
 
 - `/aru all` — replace every lower rank on your bars with the highest known rank (also available by clicking AutoRankUp in the addon compartment, for gamepad players)
 - `/aru slots` — show which action slots are scanned, including the gamepad bar
+- `/aru spells` — list each spell on your bars with the rank the game reports and what it would be upgraded to
 - `/aru debug` — print spell IDs when a new rank is detected
